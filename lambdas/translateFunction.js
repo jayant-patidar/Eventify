@@ -1,7 +1,7 @@
 const AWS = require("aws-sdk");
 const translate = new AWS.Translate({
   apiVersion: "2017-07-01",
-  region: "us-east-1",
+  region: "",
   credentials: new AWS.Credentials({
     accessKeyId: "",
     secretAccessKey: "",
