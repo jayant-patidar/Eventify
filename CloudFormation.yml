@@ -1,0 +1,241 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Infrastructure for the Eventify application
+
+Resources:
+  EventsTable1:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: EventsTable1
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  UsersTable1:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: UsersTable1
+      AttributeDefinitions:
+        - AttributeName: id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: id
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  NotifyadminLambda:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: "notifyAdmin1"
+      Runtime: "nodejs16.x"
+      Handler: "index.handler"
+      Role: "arn:aws:iam::605014000255:role/LabRole"
+      Code:
+        S3Bucket: "notifyadminlambdacode"
+        S3Key: "notifyAdmin1.zip"
+
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: emailNotifyAPI1
+
+  LambdaTestPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref NotifyadminLambda
+      Action: "lambda:InvokeFunction"
+      Principal: "apigateway.amazonaws.com"
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*"
+
+  APIResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: "test"
+
+  OptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref APIResource
+      HttpMethod: OPTIONS
+      Integration:
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key'"
+              "method.response.header.Access-Control-Allow-Methods": "'GET,POST,PUT,DELETE'"
+              "method.response.header.Access-Control-Allow-Origin": "'*'"
+            ResponseTemplates:
+              "application/json": ""
+        PassthroughBehavior: WHEN_NO_MATCH
+        RequestTemplates:
+          "application/json": '{"statusCode": 200}'
+        Type: MOCK
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            "method.response.header.Access-Control-Allow-Headers": true
+            "method.response.header.Access-Control-Allow-Methods": true
+            "method.response.header.Access-Control-Allow-Origin": true
+          ResponseModels:
+            "application/json": "Empty"
+
+  PostMethod:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref APIResource
+      AuthorizationType: NONE
+      HttpMethod: POST
+      Integration:
+        Type: AWS
+        IntegrationHttpMethod: POST
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${NotifyadminLambda.Arn}/invocations"
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseTemplates:
+              application/json: $input.json('$')
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,PUT,DELETE,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: $input.json('$')
+      RequestParameters:
+        method.request.querystring.name: false
+      MethodResponses:
+        - ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+          StatusCode: "200"
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - PostMethod
+    Properties:
+      RestApiId: !Ref ApiGateway
+
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref ApiGateway
+      DeploymentId: !Ref ApiDeployment
+      StageName: testStage1
+      Description: Production Stage
+
+  MyAPISecretManager:
+    Type: "AWS::SecretsManager::Secret"
+    DependsOn: "ApiGateway"
+    Properties:
+      Name: "APIGatewayURL"
+      Description: "API Gateway URL for notifyAdmin Lambda"
+      SecretString: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/testStage1/test "
+
+  MySNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: EventifyAdminTopic
+      DisplayName: EventifyAdminTopic
+  MySNSEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      Endpoint: jy862746@dal.ca
+      Protocol: email
+      TopicArn: !Ref MySNSTopic
+
+  BackendElasticIP:
+    Type: AWS::EC2::EIP
+
+  MyElasticIPSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: MyElasticIPSecret
+      Description: Elastic IP for BackendEC2Instance
+      SecretString: !Sub "${BackendElasticIP}"
+
+  MyEC2Instance:
+    Type: "AWS::EC2::Instance"
+    Properties:
+      ImageId: ami-0f34c5ae932e6f0e4
+      InstanceType: t2.micro
+      KeyName: cloud-term-jayant
+      IamInstanceProfile: LabInstanceProfile
+      Tags:
+        - Key: "Name"
+          Value: "TA-final"
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: True
+          DeviceIndex: "0"
+          GroupSet:
+            - !Ref EC2SecurityGroup
+      UserData:
+        "Fn::Base64": !Sub |
+          #!/bin/bash
+          sudo yum update -y
+          sudo yum install -y nodejs
+          sudo yum install git -y
+          cd /home/ec2-user
+          git clone https://patidar:glpat-gTJcz8YYxFBFo1m6aezL@git.cs.dal.ca/patidar/cloud-term-assignment.git
+          cd cloud-term-assignment/
+          cd backend/
+          npm i
+          sudo npm install -g pm2
+          sudo pm2 start index.js --name "back"
+
+  EIPAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      InstanceId: !Ref MyEC2Instance
+      EIP: !Ref BackendElasticIP
+
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable public access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: "-1"
+          CidrIp: 0.0.0.0/0
+      VpcId: vpc-01ce64b7d57c6ce17
+
+  MyEC2InstanceFront:
+    Type: "AWS::EC2::Instance"
+    Properties:
+      ImageId: ami-0f34c5ae932e6f0e4
+      InstanceType: t2.micro
+      KeyName: cloud-term-jayant
+      IamInstanceProfile: LabInstanceProfile
+      Tags:
+        - Key: "Name"
+          Value: "TA-final-front"
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: True
+          DeviceIndex: "0"
+          GroupSet:
+            - !Ref EC2SecurityGroup
+      UserData:
+        "Fn::Base64": !Sub |
+          #!/bin/bash
+          sudo yum update -y
+          sudo yum install -y nodejs
+          sudo yum install git -y
+          cd /home/ec2-user
+          git clone https://patidar:glpat-gTJcz8YYxFBFo1m6aezL@git.cs.dal.ca/patidar/cloud-term-assignment.git
+          cd cloud-term-assignment/
+          cd frontend/
+          npm i
